@@ -13,6 +13,9 @@ executors:
     machine:
       image: ubuntu-1604:201903-01
 
+orbs:
+  cloudsmith: cloudsmith/cloudsmith@1.0.3
+
 commands:
   cached-checkout:
       description: "Checkout with caching"
@@ -273,8 +276,61 @@ commands:
           when: always
           path: ~/generated-tests
           destination: generated-tests
+  publish-cloudsmith:
+    steps:
+      - cloudsmith/ensure-api-key
+      - cloudsmith/install-cli
+      - run:
+          name: Publish Packages
+          command: |
+            .circleci/scripts/publish-cloudsmith.sh
 
 workflows:
+  nightly-publish:
+    triggers:
+      - schedule:
+          # Every Day at 3am
+          cron: "0 3 * * *"
+          filters:
+            branches:
+              only:
+                - develop
+                - /^release-.*/
+                - /^foundation.*/
+    jobs:
+      - build
+      - horizon-rpm-build:
+          requires:
+            - build
+      - minion-rpm-build:
+          requires:
+            - build
+      - sentinel-rpm-build:
+          requires:
+            - build
+      - integration-test:
+          requires:
+            - build
+      - smoke-test-full:
+          requires:
+            - horizon-rpm-build
+            - minion-rpm-build
+            - sentinel-rpm-build
+      - horizon-deb-build:
+          requires:
+            - integration-test
+      - minion-deb-build:
+          requires:
+            - integration-test
+      - sentinel-deb-build:
+          requires:
+            - integration-test
+      - publish-cloudsmith:
+          # technically only requires the RPM/deb builds, but only publish
+          # if everything passes
+          requires:
+            - smoke-test-full
+            - integration-test
   weekly-coverage:
     triggers:
       - schedule:
@@ -436,6 +492,7 @@ jobs:
       - persist_to_workspace:
           root: ~/
           paths:
+            - project/target/rpm/RPMS/noarch/
             - project/opennms-container/horizon/images/
   minion-rpm-build:
     executor: centos-build-executor
@@ -468,6 +525,7 @@ jobs:
       - persist_to_workspace:
           root: ~/
           paths:
+            - project/target/rpm/RPMS/noarch/
             - project/opennms-container/minion/images/
   sentinel-rpm-build:
     executor: centos-build-executor
@@ -500,6 +558,7 @@ jobs:
       - persist_to_workspace:
           root: ~/
           paths:
+            - project/target/rpm/RPMS/noarch/
             - project/opennms-container/sentinel/images/
   horizon-deb-build:
     executor: debian-build-executor
@@ -514,14 +573,13 @@ jobs:
             export NODE_OPTIONS=--max_old_space_size=1024
             export CCI_MAXCPU=4
             .circleci/scripts/makedeb.sh opennms
-      - run:
-          name: Move Debian Files
-          command: |
-            mkdir -p ~/project/target/debs && \
-            mv ~/*.deb ~/*.changes ~/project/target/debs
       - store_artifacts:
           path: ~/project/target/debs
           destination: debs
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - project/target/debs/
   minion-deb-build:
     executor: debian-build-executor
     resource_class: large
@@ -535,14 +593,13 @@ jobs:
             export CCI_MAXCPU=4
             export CCI_VAADINJAVAMAXMEM=768m
             .circleci/scripts/makedeb.sh minion
-      - run:
-          name: Move Debian Files
-          command: |
-            mkdir -p ~/project/target/debs && \
-            mv ~/*.deb ~/*.changes ~/project/target/debs
       - store_artifacts:
           path: ~/project/target/debs
           destination: debs
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - project/target/debs/
   sentinel-deb-build:
     executor: debian-build-executor
     resource_class: large
@@ -556,14 +613,13 @@ jobs:
             export CCI_MAXCPU=4
             export CCI_VAADINJAVAMAXMEM=768m
             .circleci/scripts/makedeb.sh sentinel
-      - run:
-          name: Move Debian Files
-          command: |
-            mkdir -p ~/project/target/debs && \
-            mv ~/*.deb ~/*.changes ~/project/target/debs
       - store_artifacts:
           path: ~/project/target/debs
           destination: debs
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - project/target/debs/
   horizon-publish-oci:
     executor: centos-build-executor
     steps:
@@ -660,4 +716,10 @@ jobs:
           at: ~/
       - run-smoke-tests:
           minimal: true
+  publish-cloudsmith:
+    executor: cloudsmith/default
+    steps:
+      - attach_workspace:
+          at: ~/
+      - publish-cloudsmith
 
